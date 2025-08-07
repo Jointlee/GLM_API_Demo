@@ -3,13 +3,15 @@ import time
 import json
 import os
 import tempfile
+import requests
 from typing import List, Dict
 
 class GLMAPI:
-    def __init__(self, api_key=None, model='glm-4-plus'):
-        assert api_key, "API key cannot be empty"
+    def __init__(self, api_key="", model='glm-4-plus'):
         self.client = ZhipuAiClient(api_key=api_key)
+        self.api_key = api_key
         self.model = model
+        self.base_url = "https://open.bigmodel.cn/api/paas/v4/chat/completions"
         self.batch_max_retries = 48  # 最大重试次数，48次，每次等待30分钟，总计24小时
         self.async_max_retries = 120  # 异步任务最大重试次数，60次，每次等待1秒，总计120秒
         self.max_concurrent_tasks = 20  # 最大并发任务数
@@ -48,6 +50,8 @@ class GLMAPI:
         return temp_file.name
 
     def batch_process(self, infer_data: List[dict] = None, description: str = '') -> List[str]:
+
+        assert self.model != "glm-4.5", "GLM-4.5模型不支持批处理，请使用其他模型"
         # 创建batch文件
         batch_file_path = self._create_batch_file(infer_data)
         
@@ -229,6 +233,59 @@ class GLMAPI:
             if not result and task_ids[idx] is not None:
                 results[idx] = "Task timeout"
         
+        return results
+
+    def http_call(self, messages: List[Dict], temperature: float = 0.6, max_tokens: int = 1024) -> str:
+        """HTTP方式调用智谱AI API"""
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+
+        data = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens
+        }
+
+        try:
+            response = requests.post(self.base_url, headers=headers, json=data)
+            
+            if response.status_code == 200:
+                result = response.json()
+                return result['choices'][0]['message']['content'].strip()
+            else:
+                raise Exception(f"API调用失败: {response.status_code}, {response.text}")
+        except Exception as e:
+            print(f"HTTP调用出错: {str(e)}")
+            return f"HTTP Error: {str(e)}"
+
+    def http_process(self, infer_data: List[dict], temperature: float = 0.6) -> List[str]:
+        """使用HTTP方式批量处理数据"""
+        results = []
+        total_data = len(infer_data)
+        
+        for i, item in enumerate(infer_data):
+            print(f"处理任务 {i+1}/{total_data}")
+            
+            system = item.get('system', '')
+            instruction = item.get('instruction', '')
+            input_text = item.get('input', '')
+            
+            # 构建完整的prompt
+            messages = [
+                {"role": "system", "content": system},
+                {"role": "user", "content": f"{instruction}\n\n{input_text}"}
+            ]
+            
+            result = self.http_call(messages, temperature)
+            results.append(result)
+            
+            # 避免请求过于频繁
+            time.sleep(0.1)
+        
+        print(f"HTTP批量处理完成，共处理 {total_data} 个任务")
         return results
 
 
